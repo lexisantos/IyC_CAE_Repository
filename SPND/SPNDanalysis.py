@@ -173,9 +173,9 @@ class processdata:
         nombret = {'old': 'T Local', 'new': 'T_Local'}
         nombrei = {'old': 'Corriente [pA]', 'new': f'Crudo{self.signal}'}
         nombretxt = {'old': spnd_emitter[getattr(self, 'model' + self.signal[:3])], 
-                     'new': str(self.noserie[0])}
+                     'new': str(self.noserie)}
         try: 
-            path = glob.glob(path+ r"/{}/{}*.txt".format(self.noserie, nombretxt[self.version]))[0]
+            path = glob.glob(path+ r"/{}*/{}*.txt".format(self.noserie, nombretxt[self.version]))[0]
             Data = pd.read_csv(path, sep='\t', encoding='unicode_escape')
             ifin = np.where(Data[nombret[self.version]] == 'FIN')[0]
             if ifin.size != 0:
@@ -398,3 +398,7 @@ def massive_fits(t_cut, listaSPND, emisor, params, dts, path, Ts):
         P_err[ii] = perr
     P_tot, P_err, R2, Res = [{a:b for a, b in zip(listaSPND, xx)} for xx in [P_tot, P_err, R2, Res]]
     return (P_tot, P_err, R2, Res)
+
+
+
+
