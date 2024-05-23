@@ -1,9 +1,13 @@
+#Recordar correr 'pip install xlrd', cambiar la direccion de 
+# $ pip install pandas
+# $ pip install plotly
+# $ pip install ipywidgets
+# $ jupyter labextension install jupyterlab-plotly
+
 import numpy as np
 import pandas as pd
 from datetime import datetime
 import re
-
-#Recuerdo correr 'pip install xlrd'
 
 year = 365.24219878
 tabla_RA3 = pd.read_excel('D:/Documentos RA-3/Copia de Listado de fuentes v13.xls',
@@ -37,32 +41,14 @@ class NAA_calib:
         self.alldata = tabla_RA3.loc[Fuente]
         self.fecha_cal = datetime(*FechaCalib)
         self.fecha_doc = self.alldata['Fecha']
-        dt_caldoc = (self.fecha_cal - self.fecha_doc).days
+        dt_caldoc = float((self.fecha_cal - self.fecha_doc).days)
         self.act_doc = self.alldata[['Act       [Bq]', 'σ Act']].values.astype(float)
         self.act_cal = self.act_doc*np.exp(-np.log(2)*dt_caldoc/tabla_iaea['t1/2'][Fuente.split('_')[0]])
         
-    def eficiencia(self, NetCounts):
-        eff = NetCounts/(tabla_iaea['t1/2'][self.emisor])
+    def eficiencia(self, NetCounts, Energias, grado):
+        ratios = 
+        eff = NetCounts/(tabla_iaea['t1/2'][self.emisor]*self.act_cal*ratios)
         return eff
-    def Act_E(self, N, eff, tlive, gamma):
-        """
-        Parameters
-        ----------
-        N : float
-            Net counts for a peak in E.
-        eff : float
-            efficiency for an energy E.
-        tlive : float
-            live detection time.
-        gamma : float
-            branching ratio.
-
-        Returns
-        -------
-        Activity in Bq  
-
-        """
-        return N/(eff*tlive*gamma)
 
 class NAA_flujo:
     def __init__(self, composition, irradiation_time, postirr_time, live_time):
