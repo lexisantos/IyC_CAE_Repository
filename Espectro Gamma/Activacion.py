@@ -9,6 +9,7 @@ import pandas as pd
 from datetime import datetime
 import re
 import urllib.request
+import matplotlib.pyplot as plt
 
 year = 365.24219878
 s_day = 86400 
@@ -21,22 +22,6 @@ tabla_iaea = {'Abundance': {'Cu': 0.6915, 'Au': 1}, 'Sec_eff': {'Cu': 4.50e-24, 
               #abundancia %, seccion eff (n,g) [cm^-2], t1/2 del isótopo [s], Mr masa molar [g/mol]
 
 Livechart = "https://nds.iaea.org/relnsd/v1/data?"
-
-def lc_pd_dataframe(url):
-    req = urllib.request.Request(url)
-    req.add_header('User-Agent', 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:77.0) Gecko/20100101 Firefox/77.0')
-    return pd.read_csv(urllib.request.urlopen(req))
-
-df = lc_pd_dataframe(Livechart + "fields=decay_rads&nuclides=152eu&rad_types=g")
-
-for col in list(df.columns)[:4]:
-    df = df[pd.to_numeric(df[col],errors='coerce').notna()]
-
-df.intensity = df['intensity'].astype(float)
-
-plt.scatter(df['energy'][df["intensity"]>2], df['intensity'][df["intensity"]>2]) # plot in log scale
-plt.xlabel('Energy [keV]')
-plt.ylabel('Intensity %')
 
 def poly(grado, an, x):
     exps = np.arange(grado)
@@ -54,20 +39,54 @@ def ajuste_pol(grado, xdata, ydata, y_err=None):
     chi2 = 0 if y_err == None else (1/(len(residuals)-2))*np.sum((ydata*residuals/y_err)**2)
     return yfit, coef, perr, R2, chi2
 
+def lc_pd_dataframe(url):
+    req = urllib.request.Request(url)
+    req.add_header('User-Agent', 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:77.0) Gecko/20100101 Firefox/77.0')
+    return pd.read_csv(urllib.request.urlopen(req))
+
+class loadfromIAEA:
+    def __init__(self, nuclei, state, radiation_type: str='g', only_stable: bool=True):
+        path = {'decay': f"fields=decay_rads&nuclides={nuclei}&rad_types={radiation_type}",
+                'estable': f"fields=ground_states&nuclides={nuclei}"}
+        df = lc_pd_dataframe(Livechart + path[state.lower()])
+        self.estado = state
+        self.nucleo = nuclei
+        if state.lower() == 'decay' and only_stable == True:
+            self.data = df.query("p_energy==0") 
+        else:
+            self.data = df
+    def get(self, cols):
+        df = self.data[cols]
+        df = df[df.notna()]
+        return [df[col] for col in cols]
+
 class NAA_calib:
     def __init__(self, Fuente, FechaCalib):
         self.fuente = Fuente
         self.emisor = re.split('-|_| ', Fuente)[0]
-        self.alldata = tabla_RA3.loc[Fuente]
+        self.datafromIAEA = loadfromIAEA(self.emisor, 'decay')
+        self.datafromRA3 = tabla_RA3.loc[Fuente]
         self.fecha_cal = datetime(*FechaCalib)
-        self.fecha_doc = self.alldata['Fecha']
-        dt_caldoc = float((self.fecha_cal - self.fecha_doc).days)
-        self.act_doc = self.alldata[['Act       [Bq]', 'σ Act']].values.astype(float)
-        self.act_cal = self.act_doc*np.exp(-np.log(2)*dt_caldoc/tabla_iaea['t1/2'][Fuente.split('_')[0]])
-        
-    def eficiencia(self, NetCounts, Energias, grado):
-        ratios = 
-        eff = NetCounts/(tabla_iaea['t1/2'][self.emisor]*self.act_cal*ratios)
+        self.fecha_doc = self.datafromRA3['Fecha']
+        dt_caldoc = float((self.fecha_doc - self.fecha_cal).days)
+        intensity, unc_int, energy, hl = self.datafromIAEA.get(['intensity', 'unc_i', 'energy', 'half_life_sec'])
+        hl_d = np.mean(hl)/s_day
+        self.act_doc = self.datafromRA3[['Act       [Bq]', 'σ Act']].values.astype(float)
+        self.act_cal = self.act_doc*np.exp(np.log(2)*dt_caldoc/hl_d)
+        self.act_cal[1] = self.act_cal[1]*self.act_cal[0]
+        self.int_energy = np.transpose([energy, intensity])
+        self.int_err = unc_int
+        self.halflife_s = np.mean(hl)
+    def eficiencia(self, NetCounts, Energias, grado_pol, criterio: float=0):
+        i_sel = self.int_energy[:, 1]>criterio
+        I_E_IAEA = np.array(self.int_energy[i_sel])
+        intensity_sel = np.zeros(len(Energias))
+        for jj, en in enumerate(Energias):
+            for ee in I_E_IAEA:
+                x = en/ee[0]
+                if 0.99<x<1.01:
+                    intensity_sel[jj] = ee[1] 
+        eff = NetCounts/(self.halflife_s*self.act_cal[0]*intensity_sel)
         return eff
 
 class NAA_flujo:
