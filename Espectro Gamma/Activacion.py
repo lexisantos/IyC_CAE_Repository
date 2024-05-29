@@ -9,7 +9,6 @@ import pandas as pd
 from datetime import datetime
 import re
 import urllib.request
-import matplotlib.pyplot as plt
 
 year = 365.24219878
 s_day = 86400 
@@ -23,12 +22,31 @@ tabla_iaea = {'Abundance': {'Cu': 0.6915, 'Au': 1}, 'Sec_eff': {'Cu': 4.50e-24, 
 
 Livechart = "https://nds.iaea.org/relnsd/v1/data?"
 
+def redondeo(mean, err, cs, texto = False):
+    """
+    Devuelve al valor medio con la misma cant. de decimales que el error (con 2 c.s.).
+    """
+    digits = -np.floor(np.log10(err)).astype(int)+cs-1
+    if err<1:
+        err_R = format(np.round(err, decimals = digits), f'.{digits}f')
+        mean_R = str(np.round(mean, decimals = len(err_R)-2))
+    else:
+        err_R = format(np.round(err, decimals = digits), '.0f')
+        mean_R = format(np.round(mean, decimals = cs-1-len(err_R)), '.0f')
+    if texto == True:
+        return (mean_R, '±',err_R)
+    else:
+        return (float(mean_R), float(err_R))
+    
 def poly(grado, an, x):
-    exps = np.arange(grado)
-    return np.sum(an[::-1]*x**exps)
+    exps = np.arange(grado+1)
+    return np.array([np.dot(an[::-1], xx**exps) for xx in x])
     
 def ajuste_pol(grado, xdata, ydata, y_err=None):
-    weight = None if y_err ==None else 1/y_err
+    try:
+        weight = 1/y_err
+    except:
+        weight = y_err
     coef, pcov = np.polyfit(xdata, ydata, deg = grado, w= weight, cov=True)
     yfit = poly(grado, coef, xdata)
     residuals = ydata - yfit
@@ -36,8 +54,11 @@ def ajuste_pol(grado, xdata, ydata, y_err=None):
     ss_res = np.sum(residuals**2)
     ss_tot = np.sum((yfit-np.mean(yfit))**2)
     R2 = 1 - (ss_res / ss_tot)
-    chi2 = 0 if y_err == None else (1/(len(residuals)-2))*np.sum((ydata*residuals/y_err)**2)
-    return yfit, coef, perr, R2, chi2
+    try: 
+        chi2 = (1/(len(residuals)-2))*np.sum((ydata*residuals*weight)**2)
+    except:
+        chi2 = 0
+    return coef, perr, R2, chi2, residuals
 
 def lc_pd_dataframe(url):
     req = urllib.request.Request(url)
@@ -57,100 +78,46 @@ class loadfromIAEA:
             self.data = df
     def get(self, cols):
         df = self.data[cols]
-        df = df[df.notna()]
-        return [df[col] for col in cols]
+        df = df[df[cols].notna()]
+        return df
 
 class NAA_calib:
     def __init__(self, Fuente, FechaCalib):
         self.fuente = Fuente
         self.emisor = re.split('-|_| ', Fuente)[0]
-        self.datafromIAEA = loadfromIAEA(self.emisor, 'decay')
+        self.datafromIAEA = loadfromIAEA(self.emisor, 'decay').data
         self.datafromRA3 = tabla_RA3.loc[Fuente]
         self.fecha_cal = datetime(*FechaCalib)
         self.fecha_doc = self.datafromRA3['Fecha']
-        dt_caldoc = float((self.fecha_doc - self.fecha_cal).days)
-        intensity, unc_int, energy, hl = self.datafromIAEA.get(['intensity', 'unc_i', 'energy', 'half_life_sec'])
-        hl_d = np.mean(hl)/s_day
+        dt_caldoc = float((self.fecha_doc - self.fecha_cal).days)*s_day
+        intensity, unc_int, energy, hl = self.datafromIAEA.get(['intensity', 'unc_i', 'energy', 'half_life_sec']).values.T
+        self.halflife_s = np.mean(hl)
         self.act_doc = self.datafromRA3[['Act       [Bq]', 'σ Act']].values.astype(float)
-        self.act_cal = self.act_doc*np.exp(np.log(2)*dt_caldoc/hl_d)
+        self.act_cal = self.act_doc*np.exp(np.log(2)*dt_caldoc/self.halflife_s)
         self.act_cal[1] = self.act_cal[1]*self.act_cal[0]
         self.int_energy = np.transpose([energy, intensity])
-        self.int_err = unc_int
-        self.halflife_s = np.mean(hl)
-    def eficiencia(self, NetCounts, Energias, grado_pol, criterio: float=0):
+        self.int_err = unc_int #np.array([np.mean(hl), np.mean(self.datafromRA3.get('unc_hls'))])
+        # self.dt_caldoc = dt_caldoc
+    def cal_eff(self, NetCounts, Energias, grado_pol, tlive, NetCounts_err= None, criterio: float=0):
         i_sel = self.int_energy[:, 1]>criterio
         I_E_IAEA = np.array(self.int_energy[i_sel])
+        I_err_sel = np.array(self.int_err[i_sel])
+        energy_sel = np.zeros(len(Energias))
         intensity_sel = np.zeros(len(Energias))
+        int_err_sel = np.zeros(len(Energias))
         for jj, en in enumerate(Energias):
-            for ee in I_E_IAEA:
+            for n, ee in enumerate(I_E_IAEA):
                 x = en/ee[0]
                 if 0.99<x<1.01:
-                    intensity_sel[jj] = ee[1] 
-        eff = NetCounts/(self.halflife_s*self.act_cal[0]*intensity_sel)
-        return eff
-
-class NAA_flujo:
-    def __init__(self, composition, irradiation_time, postirr_time, live_time):
-        self.td = postirr_time
-        self.ti = irradiation_time
-        self.tlive = live_time
-        self.comp = composition #{'El1': %, 'El2': %}
-    
-    def DDA(self, real_time):
-        halflife = np.array([tabla_iaea['t1/2'][mat] for mat in list(self.comp.keys())])
-        f = np.log(2)*(real_time/halflife)
-        corr = f/(1-np.exp(-f))
-        return corr
-
-    def N_padres(self, masa):
-        m_parcial = np.array([self.comp[mat] for mat in list(self.comp.keys())])
-        Mr = np.array([tabla_iaea['Mr'][mat] for mat in list(self.comp.keys())])
-        N = 6.022e23*m_parcial/Mr
-        return N
-     
-
-def calc_act(mat, Espectros, comp, param, nmed):
-    '''
-    
-
-    Parameters
-    ----------
-    mat : str
-        Material del que se obtuvo un espectro. Por ej., W17.
-    Espectros : dict
-        Picos dependiendo el isótopo. Informa la energía del pico y su intensidad en %.
-    comp : list, str
-        Nombres de los picos a ver de Espectros.
-    eff_ord : list, float
-        Ordenada al origen de la calib de eff, con su error.
-    eff_pend : list, float
-        Pendiente de la calib de eff, con su error.
-
-    Returns
-    -------
-    Acts_m : dict
-        Actividad media, entre todas las mediciones hechas, por cada isótopo, con su error por prop. de errores.
-
-    '''
-    datos = pd.read_csv('Cuentas Alambres W\datos_{}.txt'.format(mat), sep='\t')
-    datos['Medicion'] = datos['Medicion'].astype(str)
-    datos = datos.set_index(['Medicion'])
-    Acts = {}
-    treals = {}
-    for i, el in enumerate(comp):
-        datos_med = datos.loc[el]
-        Acts[el] = np.zeros((nmed, 2))
-        treals[el] = np.zeros(nmed)
-        for j in range(nmed):
-            try:
-                E, Net, Net_err, tlive, treal = datos_med[datos_med.keys()[[0, 3, 4, 5, 6]]].iloc[j] #selecciono los datos 
-            except:
-                E, Net, Net_err, tlive, treal = datos_med[datos_med.keys()[[0, 3, 4, 5, 6]]]
-            eff, eff_err = eficiencia(E, *param[:, 0])*np.array([1, np.sqrt(np.sum((param[:, 1]*np.log(E)**np.arange(len(param[:, 0])))**2))])
-            Acts[el][j] = np.array([1, np.sqrt((Net_err/Net)**2 + (eff_err/eff)**2)])*Act_E(Net, eff, tlive, Espectros[el][1])
-            treals[el][j] = treal
-        # Acts_m[el] = np.array([np.mean(Acts[el][:,0]), np.sqrt(np.std(Acts[el][:,0], ddof=1)**2 + (1/N**2)*np.sum(Acts[el][:,1]**2))])
-    return Acts, treals
-
-
- #np.polyfit
+                    intensity_sel[jj] = ee[1]/100
+                    int_err_sel[jj] = I_err_sel[n]/100
+                    energy_sel[jj] = ee[0]
+        eff = NetCounts/(tlive*self.act_cal[0]*intensity_sel)
+        try:
+            eff_err = eff*np.sqrt((NetCounts_err/NetCounts)**2 + (int_err_sel*self.act_cal[0])**2 + (self.act_cal[1]*intensity_sel)**2)
+                                  #np.exp(np.log(2)*self.dt_caldoc/self.halflife_s[0])*np.log(2))
+        except:
+            eff_err = None
+        coef, perr, R2, chi2, res = ajuste_pol(grado_pol, np.log(Energias), np.log(eff), y_err=eff_err)
+        return eff, eff_err, coef, perr, R2, chi2, np.array([energy_sel, intensity_sel]).T, res
+ 
